@@ -1,6 +1,11 @@
-# Optimal Benchmark
+﻿# Optimal Benchmark
 
-This repository contains the codebase used to run large-scale benchmarking experiments for microbiome-based diagnostic modeling.
+This repository contains scripts for benchmarking gut microbiome diagnostic models using genus (or taxon) abundance features. The focus is on methodological choices and their impact on classification performance and stability. The text below is conservative and limited to what is present in the repository.
+
+## Project Purpose
+
+- Compare how filtering strategies, batch-effect correction, model choice, and training strategy influence classification performance.
+- Produce reproducible model evaluation results with multiple random seeds, with emphasis on ROC_AUC.
 
 ## Scope of the Benchmark
 
@@ -11,44 +16,163 @@ The benchmark systematically evaluates combinations of:
 - Machine learning algorithms
 - Training strategies across heterogeneous cohorts
 
-The focus is on understanding how methodological choices interact to influence model performance and stability.
+## Data and Results
 
-## What This Repository Contains
+- This repository includes scripts and a sample input file only.
+- Raw sequencing data and full processing pipelines are not included.
+- Example input data: `filter/15_genus_abundance_with_group.csv` (original data file).
 
-This repository includes only the scripts required to train, evaluate, and benchmark models.
+## Reproducibility and Parameter Traceability
 
-Raw sequencing data and processed abundance tables are not included. Input data are assumed to be generated from publicly available cohorts and provided in a standardized format.
+- Most scripts accept command-line arguments for input, output, and the number of repeats (default 40).
+- Random seeds are fixed as `0..repeat-1`, and each repeat is recorded independently.
+- Test/validation features are aligned to training features, with missing columns filled as 0.
 
-## Usage
+## Directory Structure
 
-The benchmark is designed to be executed in a modular manner:
+```
+D:\Optimal-Benchmark
+├─ batch effect\               # Batch-effect correction (R)
+├─ data fusion\                # Data-fusion training strategy (Python)
+├─ figures\                    # Workflow figures
+├─ filter\                     # Feature filtering and example data
+├─ traditional method\         # Traditional train-test strategy (Python)
+├─ transfer learning\          # Transfer learning (Python / PyTorch)
+└─ README.md
+```
 
-1. Prepare microbiome abundance tables
-2. Apply feature filtering and batch-effect correction
-3. Train models under different strategies
-4. Evaluate and summarize performance metrics
+## Main Scripts
 
-Scripts are organized by functional modules rather than datasets.
+### filter/2.py - Group split and feature filtering
 
-## Model Outputs
+- Input: CSV with `Sample`, `label`, `group` columns; all other columns are features.
+- `group` is geographic/batch information (used for batch correction).
+- `label` is biological status (0 = healthy, 1 = disease) for binary classification.
+- Splits samples into China and non-China based on `group`:
+  - China: no feature removal, only row-wise normalization (TSS).
+  - non-China:
+    - Global prevalence filtering (A50 / A90)
+    - Project-wise prevalence filtering (B50 / B90; project ID is the prefix before `_` in `Sample`)
+- Outputs:
+  - `china_full.csv / china_label.csv / china_label_group.csv / china_meta.csv`
+  - `nonchina_A50/...`, `nonchina_A90/...`, `nonchina_B50/...`, `nonchina_B90/...`
+  - Each non-China directory contains `*_removed_full.csv`, `*_removed_label.csv`, `*_removed_label_group.csv`, `*_removed_meta.csv`
+  - `summary_removed.csv` summarizes removed features and sample counts
+- Note: `removed_*` files represent the removed feature set. Both the kept set and removed set are modeled through the same pipeline for comparison.
 
-For each model and training strategy, the benchmark generates two standardized output files based on repeated evaluations.
+### batch effect/*.R - Batch-effect correction (fixed filenames)
 
-### Performance metrics
+These scripts use fixed input/output filenames and expect to run in a working directory that contains those files (adjust paths if needed):
 
-Model performance is evaluated on the validation dataset across multiple random seeds. The following file is generated:
+- `run_combat.R` (sva::ComBat)
+  - Input: `nonchina_A50_full.csv` + `nonchina_A50_meta.csv`
+  - Output: `nonchina_A50_combat.csv`
+- `run_conqur.R` (ConQuR)
+  - Input: `nonchina_A50_full.csv` + `nonchina_A50_meta.csv`
+  - Output: `nonchina_A50_conqur_fixed.csv`
+- `run_mmuphin.R` (MMUPHin::adjust_batch)
+  - Input: `nonchina_A50_full.csv` + `nonchina_A50_meta.csv`
+  - Output: `nonchina_A50_MMUPHin.csv` (and `nonchina_A50_MMUPHin_diagnostic.pdf`)
 
-- `validation_metrics_40times.csv`  
-  This file records classification performance metrics for each repetition, including Accuracy, Precision, Recall, F1-score, and ROC-AUC. Each row corresponds to one random seed, enabling assessment of performance variability and stability.
+Common behavior:
+- `group` is treated as the batch variable; `label` is preserved as biological signal.
+- If inputs are not row-normalized, total-sum scaling is applied.
 
-### Feature importance
+### traditional method/*.py - Traditional train-test strategy
 
-For models that provide intrinsic feature importance scores, the benchmark additionally records the most informative features:
+Models included:
+`AdaBoost, CatBoost, ExtraTrees, GaussianNB, GradientBoosting, KNN, LightGBM, LogisticRegression, MLP, QuadraticDiscriminantAnalysis, RF, SVC, XGBoost`
 
-- `top20_features_40times.csv`  
-  This file contains the top 20 features ranked by model-specific importance scores for each repetition. For each random seed, feature rank, taxonomic name, and importance value are reported.
+- Arguments: `--train`, `--test`, `--output`, `--repeat`
+- CSVs are read with `index_col=0`; `label` is required, all other columns are features.
+- Test features are aligned to training features (missing columns filled as 0).
+- Output per model (in `--output` directory):
+  - `<MODEL>_metrics_40times.csv` (includes ROC_AUC; some scripts also include PR_AUC)
+  - `<MODEL>_top20_features_40times.csv`
+- Emphasis is on ROC_AUC; model performance is evaluated across 40 random seeds.
 
-These outputs are designed to support both performance comparison and systematic analysis of feature-level stability across repeated runs.
+### data fusion/*.py - Data-fusion training strategy
+
+Models included:
+`AdaBoost, CatBoost, ExtraTrees, GaussianNB, GradientBoosting, KNN, LightGBM, LogisticRegression, MLP, QDA, RF, SVC, XGBoost`
+
+- Arguments: `--train`, `--test`, `--val`, `--output`, `--repeat`
+- Training uses `train + test` combined; evaluation is on `val`.
+- Output per model (in `--output` directory):
+  - `validation_metrics_40times.csv`
+  - `top20_features_40times.csv`
+- Emphasis is on ROC_AUC; model performance is evaluated across 40 random seeds.
+
+### transfer learning/train_transfer_finetune_last.py - Transfer learning
+
+- Arguments: `--train`, `--transfer`, `--test`, `--outdir`, `--hidden_dims`, `--batch_size`, `--epochs`, `--ft_epochs`, `--repeat`
+- Input format auto-detection:
+  - Supports sample-by-feature tables with `Sample` and `label` columns
+  - Supports transposed tables or label-as-row formats
+- Features are aligned to the training set.
+- Model: MLP; only the last layer is fine-tuned; default CPU execution.
+- Output (`--outdir/<train_basename>/`):
+  - `transfer_metrics_40seeds.csv`
+  - `preds_seed{seed}.csv`
+
+## Input Data Format
+
+### Example 1: filter/2.py input (with group)
+
+```
+Sample,label,group,GenusA,GenusB,GenusC
+P1_USA_001,0,USA,12,0,5
+P2_CHN_003,1,China,0,7,3
+```
+
+- `group` is batch/region.
+- `label` is binary biological status (0 = healthy, 1 = disease).
+- Feature columns are taxa abundances (counts or relative abundances).
+
+### Example 2: traditional/data-fusion scripts input (index_col=0)
+
+```
+Sample,label,GenusA,GenusB,GenusC
+S1,0,0.12,0.00,0.05
+S2,1,0.00,0.07,0.03
+```
+
+- First column is read as the index.
+- `label` is required; all other columns are numeric features.
+
+## Outputs
+
+### Filtering outputs
+
+- `china_*.csv`: China subset with row normalization.
+- `nonchina_*` directories: removed feature sets and metadata for each threshold strategy.
+- `summary_removed.csv`: removed features and sample count changes.
+
+### Batch-effect correction outputs
+
+- `nonchina_A50_combat.csv`
+- `nonchina_A50_conqur_fixed.csv`
+- `nonchina_A50_MMUPHin.csv` (plus diagnostic PDF)
+
+### Traditional method outputs
+
+- `<MODEL>_metrics_40times.csv` (ROC_AUC per seed)
+- `<MODEL>_top20_features_40times.csv`
+
+### Data-fusion outputs
+
+- `validation_metrics_40times.csv`
+- `top20_features_40times.csv`
+
+### Transfer learning outputs
+
+- `transfer_metrics_40seeds.csv`
+- `preds_seed{seed}.csv`
+
+## Dependencies (from imports)
+
+- Python: `pandas`, `numpy`, `scikit-learn`, `xgboost`, `lightgbm`, `catboost`, `torch`
+- R: `sva`, `ConQuR`, `MMUPHin`, `data.table`, `dplyr`, `foreach`
 
 ## Graphical Abstract
 
